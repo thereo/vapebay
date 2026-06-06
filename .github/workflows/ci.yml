@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   # ---- API (NestJS) ----
-  test:api:
+  test-api:
     name: Test API (unit + e2e)
     runs-on: ubuntu-latest
     services:
@@ -75,8 +75,8 @@ jobs:
   # ---- API build-only (fast feedback on TS errors) ----
   # This duplicates the build step above so a TS regression fails the pipeline
   # before the slower test job even needs to run. It does NOT replace
-  # test:api — the unit tests still run there.
-  build:api:
+  # test-api — the unit tests still run there.
+  build-api:
     name: Build API
     runs-on: ubuntu-latest
     steps:
@@ -92,7 +92,7 @@ jobs:
         run: npm run build
 
   # ---- Admin (Laravel + Filament) ----
-  test:admin:
+  test-admin:
     name: Test Admin (Laravel)
     runs-on: ubuntu-latest
     services:
@@ -153,7 +153,7 @@ jobs:
   # No tests on the Nuxt side yet (per frontend/frontend.md "known follow-up"),
   # so this job is build-only — it catches TS errors and missing imports
   # across pages/, components/, composables/, types/.
-  build:web:
+  build-web:
     name: Build Web (Nuxt)
     runs-on: ubuntu-latest
     steps:
