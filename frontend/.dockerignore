@@ -1,0 +1,13 @@
+node_modules
+.output
+.nuxt
+.nitro
+.data
+.env
+.env.*
+!.env.example
+*.log
+.git
+.gitignore
+README.md
+frontend.md

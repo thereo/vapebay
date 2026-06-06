@@ -1,0 +1,207 @@
+# VapeBay — GitLab CI
+# Pipeline: build → test → deploy (manual)
+# Triggered on push to feature/*, fix/*, chore/*, develop, main
+# Deploy job is `when: manual` so it only runs when a maintainer clicks "play".
+
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  # Pin to Node 20 (matches repo prerequisites).
+  NODE_VERSION: "20"
+  # Pin to PHP 8.3 (matches backend-admin/composer.json).
+  PHP_VERSION: "8.3"
+  # Postgres service used by the test stage. Mirrors the local dev defaults
+  # from README.md (postgres / 1 / vapeshop_db) so behaviour matches.
+  POSTGRES_DB: vapeshop_db
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: "1"
+
+# ────────────────────────────────────────────────────────────
+# Shared cache key — node_modules is reused across jobs when the lockfiles
+# don't change. Filament's vendor dir is rebuilt per job (it's a few seconds
+# on cache restore anyway).
+# ────────────────────────────────────────────────────────────
+.node-cache: &node-cache
+  key:
+    files:
+      - package-lock.json
+      - frontend/package-lock.json
+      - backend-api/package-lock.json
+  paths:
+    - node_modules/
+    - frontend/node_modules/
+    - backend-api/node_modules/
+  policy: pull-push
+
+# ────────────────────────────────────────────────────────────
+# BUILD stage
+# ────────────────────────────────────────────────────────────
+build:frontend:
+  stage: build
+  image: node:${NODE_VERSION}-alpine
+  cache: *node-cache
+  variables:
+    # Nuxt build needs a placeholder public API base; runtime env swaps it in.
+    NUXT_PUBLIC_API_BASE: "http://api.example.com"
+  script:
+    - cd frontend
+    - npm ci
+    - npm run build
+  artifacts:
+    name: "frontend-build-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - frontend/.output/
+    expire_in: 1 day
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+build:api:
+  stage: build
+  image: node:${NODE_VERSION}-alpine
+  cache: *node-cache
+  script:
+    - cd backend-api
+    - npm ci
+    - npm run build
+  artifacts:
+    name: "api-build-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - backend-api/dist/
+    expire_in: 1 day
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+build:admin:
+  stage: build
+  image: php:${PHP_VERSION}-cli
+  before_script:
+    - apt-get update -y
+    - apt-get install -y --no-install-recommends git unzip libpq-dev
+    - docker-php-ext-install pdo_pgsql pgsql
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+  script:
+    - cd backend-admin
+    - composer install --no-interaction --prefer-dist --no-progress
+    # Smoke-build: ensure autoload + classmap resolve, no syntax errors.
+    - php artisan key:generate --force
+  artifacts:
+    name: "admin-build-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - backend-admin/vendor/
+    expire_in: 1 day
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+# ────────────────────────────────────────────────────────────
+# TEST stage
+# Postgres is started as a service container. Unit tests don't need it, but
+# e2e + admin tests do — single service keeps the yml simple.
+# ────────────────────────────────────────────────────────────
+.test-db: &test-db
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_USER: $POSTGRES_USER
+    DB_PASSWORD: $POSTGRES_PASSWORD
+    DB_NAME: $POSTGRES_DB
+
+test:api-unit:
+  stage: test
+  image: node:${NODE_VERSION}-alpine
+  cache: *node-cache
+  needs: ["build:api"]
+  script:
+    - cd backend-api
+    - npm ci
+    - npm test
+  coverage: '/All files[^|]*\|[^|]*\s+([\d.]+)/'
+  artifacts:
+    when: always
+    reports:
+      junit: backend-api/coverage/junit.xml
+    expire_in: 7 days
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+test:api-e2e:
+  stage: test
+  image: node:${NODE_VERSION}-alpine
+  cache: *node-cache
+  needs: ["build:api"]
+  <<: *test-db
+  variables:
+    # e2e suite targets a separate DB so it never collides with dev data
+    # (see backend-api/test/products.e2e-spec.ts).
+    DB_NAME: vapeshop_e2e
+  before_script:
+    - apk add --no-cache postgresql-client
+    # Wait for the service container to accept connections.
+    - until pg_isready -h postgres -p 5432; do sleep 1; done
+  script:
+    - cd backend-api
+    - npm ci
+    - npm run test:e2e
+  artifacts:
+    when: always
+    reports:
+      junit: backend-api/coverage/e2e-junit.xml
+    expire_in: 7 days
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+test:admin:
+  stage: test
+  image: php:${PHP_VERSION}-cli
+  <<: *test-db
+  before_script:
+    - apt-get update -y
+    - apt-get install -y --no-install-recommends git unzip libpq-dev
+    - docker-php-ext-install pdo_pgsql pgsql
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    - cd backend-admin
+    - composer install --no-interaction --prefer-dist --no-progress
+    - cp .env.example .env
+    - php artisan key:generate
+    # admin uses pgsql (see .env.example) — the test DB_HOST/DB_NAME/etc.
+    # from the service container get picked up by Laravel's env() at runtime.
+    - sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=pgsql/' .env
+    - sed -i "s|^DB_DATABASE=.*|DB_DATABASE=${DB_NAME}|" .env
+  script:
+    - cd backend-admin
+    - php artisan test
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+# ────────────────────────────────────────────────────────────
+# DEPLOY stage (manual)
+# Per the CLAUDE.md / Technical Test instructions: describe the steps in the
+# job body without actually deploying. This is the "play" button hook.
+# ────────────────────────────────────────────────────────────
+deploy:staging:
+  stage: deploy
+  image: alpine:3.20
+  when: manual
+  environment:
+    name: staging
+    url: https://staging.vapebay.example.com
+  script:
+    - echo "Manual deploy placeholder."
+    - echo "Production deploy steps (Digital Ocean):"
+    - echo "  1. SSH into the droplet (terraform output droplet_ip)."
+    - echo "  2. Pull the new image tag from the container registry."
+    - echo "  3. docker compose pull api web admin"
+    - echo "  4. docker compose up -d --no-deps api web admin"
+    - echo "  5. Run: docker compose exec api npx ts-node -r dotenv/config src/main.ts --seed"
+    - echo "  6. Run: docker compose exec admin php artisan migrate --force"
+    - echo "  7. Verify health: curl -f http://<droplet>/api/products?limit=1"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual

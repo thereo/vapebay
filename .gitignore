@@ -1,0 +1,46 @@
+# --- Node / Nuxt / NestJS ---
+node_modules/
+.nuxt/
+.output/
+.nitro/
+.cache/
+dist/
+coverage/
+*.tsbuildinfo
+.vscode/
+.idea/
+# Repo-local agent / dev docs. These are working notes, not part of the project.
+CLAUDE.md
+frontend.md
+frontend/frontend.md
+# Local env files (per-service). The repo ships .env.example where useful.
+backend-api/.env
+backend-api/.env.*
+!backend-api/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+# Repo-root env files (compose/dev).
+.env
+.env.*
+!.env.example
+
+# --- Laravel / PHP ---
+backend-admin/vendor/
+backend-admin/.env
+backend-admin/.env.*
+!backend-admin/.env.example
+backend-admin/storage/*.key
+backend-admin/storage/framework/cache/data/
+backend-admin/storage/framework/sessions/
+backend-admin/storage/framework/views/
+backend-admin/storage/logs/
+backend-admin/bootstrap/cache/*.php
+!backend-admin/bootstrap/cache/.gitkeep
+backend-admin/public/build/
+backend-admin/public/hot
+
+# --- Logs / OS ---
+*.log
+.DS_Store
+Thumbs.db
