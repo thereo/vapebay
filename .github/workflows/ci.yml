@@ -135,7 +135,11 @@ jobs:
 
       - name: Install PHP dependencies
         working-directory: backend-admin
-        run: composer install --no-interaction --prefer-dist
+        # Laravel's `package:discover` runs as a post-autoload script and needs
+        # the gitignored cache directories to exist on a fresh checkout.
+        run: |
+          mkdir -p storage/framework/{cache,sessions,views} storage/logs bootstrap/cache
+          composer install --no-interaction --prefer-dist
 
       - name: Generate app key
         working-directory: backend-admin
