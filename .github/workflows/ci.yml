@@ -1,0 +1,173 @@
+# GitHub Actions CI for the VapeBay monorepo.
+# Mirrors the .gitlab-ci.yml stage layout (build → test → deploy) where it
+# makes sense. The "deploy" stage is intentionally omitted — it's a manual
+# trigger only and shouldn't run from GitHub.
+#
+# Jobs (all in parallel after the postgres service starts):
+#   test:api      - unit + e2e against a vapeshop_e2e DB
+#   test:admin    - Laravel smoke tests (artisan migrate on a fresh DB)
+#   build:web     - Nuxt build (catches type errors and missing imports)
+#   build:api     - NestJS build (catches TS errors before unit tests run)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-flight run for the same ref when a new commit lands.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- API (NestJS) ----
+  test:api:
+    name: Test API (unit + e2e)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: 1
+          POSTGRES_DB: vapeshop_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: 1
+      DB_NAME: vapeshop_db
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend-api/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend-api
+        run: npm ci
+
+      - name: Build (TypeScript)
+        working-directory: backend-api
+        run: npm run build
+
+      - name: Unit tests
+        working-directory: backend-api
+        run: npm test
+
+      - name: E2E tests
+        working-directory: backend-api
+        run: npm run test:e2e
+
+  # ---- API build-only (fast feedback on TS errors) ----
+  # This duplicates the build step above so a TS regression fails the pipeline
+  # before the slower test job even needs to run. It does NOT replace
+  # test:api — the unit tests still run there.
+  build:api:
+    name: Build API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend-api/package-lock.json
+      - working-directory: backend-api
+        run: npm ci
+      - working-directory: backend-api
+        run: npm run build
+
+  # ---- Admin (Laravel + Filament) ----
+  test:admin:
+    name: Test Admin (Laravel)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: 1
+          POSTGRES_DB: vapeshop_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_CONNECTION: pgsql
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_DATABASE: vapeshop_test
+      DB_USERNAME: postgres
+      DB_PASSWORD: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql, pgsql, mbstring, bcmath
+          coverage: none
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            backend-admin/vendor
+            ~/.composer/cache/files
+          key: composer-${{ runner.os }}-${{ hashFiles('backend-admin/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install PHP dependencies
+        working-directory: backend-admin
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Generate app key
+        working-directory: backend-admin
+        run: php artisan key:generate
+
+      - name: Run migrations (fresh)
+        working-directory: backend-admin
+        run: php artisan migrate:fresh --force
+
+      - name: Run tests
+        working-directory: backend-admin
+        run: php artisan test
+
+  # ---- Web (Nuxt) ----
+  # No tests on the Nuxt side yet (per frontend/frontend.md "known follow-up"),
+  # so this job is build-only — it catches TS errors and missing imports
+  # across pages/, components/, composables/, types/.
+  build:web:
+    name: Build Web (Nuxt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        env:
+          # CI build doesn't need a live API, but Nuxt still evaluates
+          # runtime config at build time.
+          NUXT_PUBLIC_API_BASE: http://localhost:3001
+        run: npm run build
