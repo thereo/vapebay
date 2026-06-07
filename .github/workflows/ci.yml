@@ -141,6 +141,11 @@ jobs:
           mkdir -p storage/framework/{cache,sessions,views} storage/logs bootstrap/cache
           composer install --no-interaction --prefer-dist
 
+      - name: Copy .env from example
+        working-directory: backend-admin
+        # .env is gitignored, so a fresh checkout needs the example copied over.
+        run: cp .env.example .env
+
       - name: Generate app key
         working-directory: backend-admin
         run: php artisan key:generate
